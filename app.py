@@ -95,6 +95,6 @@ else:
                 st.info(predict_str)
                 
             except KeyError:
-                st.error("에러. 영어 문자만 가능합니다.(특수문자 안됩니다.)")
+                st.error("에러. 소문자와 영어만 가능합니다.(특수문자 X)")
 
 

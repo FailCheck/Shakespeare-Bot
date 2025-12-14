@@ -49,8 +49,8 @@ model, char_dic, char_set, dic_size = load_model()
 # ---------------------------------------------------------
 # 3. 웹사이트 화면 구성 (UI)
 # ---------------------------------------------------------
-st.title("전현우의 첫 인공지능 웹사이트(Beta)")
-st.caption("처음이긴 한데, 성공했쥬?")
+st.title("Jay의 첫 인공지능 웹사이트(Beta)")
+st.caption("인공지능은 업데이트 될 예정.")
 
 if model is None:
     st.error("❌ 오류: 'shakespeare.pt' 파일이 없습니다. 13번 코드를 먼저 실행하세요!")
@@ -95,6 +95,6 @@ else:
                 st.info(predict_str)
                 
             except KeyError:
-                st.error("⚠️ 죄송합니다. AI가 아직 배우지 못한 글자가 포함되어 있어요! (대소문자 등을 확인해주세요)")
+                st.error("에러. 영어 문자만 가능합니다.(특수문자 안됩니다.)")
 
 

@@ -63,6 +63,9 @@ if model is None:
 else:
     # 사용자 입력
     user_input = st.text_input("영어 단어를 입력하세요 (첫 마디를 던져주세요)", "The king")
+    # [추가할 코드] 창의성 조절 슬라이더
+    # 0.1 ~ 2.0 사이의 값을 조절. 기본값은 0.8
+    temperature = st.slider("창의성 조절 (Temperature)", 0.1, 2.0, 0.8)
 
     if st.button("AI, 글을 써줘!"):
         # 글자 -> 숫자 사전
@@ -101,7 +104,7 @@ else:
                     last_output = output[-1]
                     
                     # 확률로 변환 (Softmax) 및 샘플링
-                    prob = torch.softmax(last_output, dim=0).numpy()
+                    prob = torch.softmax(last_output / temperature, dim=0).numpy()
                     
                     # 약간의 무작위성 추가 (Temperature) - 너무 뻔한 말만 안 하게
                     char_index = np.random.choice(dic_size, p=prob)

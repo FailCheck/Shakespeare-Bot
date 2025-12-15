@@ -3,98 +3,120 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-# 1. AI 모델 구조
+# ---------------------------------------------------------
+# 1. AI 모델 설계도 (학습 코드와 똑같아야 함!)
+# ---------------------------------------------------------
 class Net(nn.Module):
     def __init__(self, input_dim, hidden_dim, layers):
         super(Net, self).__init__()
+        # 층 개수(layers)를 변수로 받도록 수정!
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=layers, batch_first=True)
         self.fc = nn.Linear(hidden_dim, input_dim, bias=True)
 
     def forward(self, x):
         out, _ = self.lstm(x)
+        out = out.reshape(-1, out.shape[2])
         out = self.fc(out)
         return out
 
+# ---------------------------------------------------------
+# 2. 웹사이트 화면 구성
+# ---------------------------------------------------------
+st.title("✒️ AI Shakespeare Writer (Pro)")
+st.caption("100만 자의 셰익스피어 전집을 학습한 2층짜리 LSTM 모델입니다.")
 
-# 2. 저장된 뇌(shakespeare.pt) 불러오기 
-
-@st.cache_resource 
-# 웹사이트가 새로고침 될 때마다 모델을 다시 로딩하지 않게 함 (속도 향상)
-
+# ---------------------------------------------------------
+# 3. 뇌(.pt) 불러오기
+# ---------------------------------------------------------
+@st.cache_resource
 def load_model():
-    # 파일이 있는지 확인
+    # 1. 파일 읽기
     try:
-        # 저장된 딕셔너리 불러오기
+        # map_location=torch.device('cpu')는 클라우드(CPU)에서 돌리기 필수!
         checkpoint = torch.load('shakespeare.pt', map_location=torch.device('cpu'))
-        
-        # 족보(사전) 복구
-        loaded_chars = checkpoint['chars']
-        loaded_char_dic = {c: i for i, c in enumerate(loaded_chars)}
-        dic_size = checkpoint['dic_size']
-        hidden_size = checkpoint['hidden_size']
-        
-        # 모델 뼈대 만들고 가중치 끼우기
-        loaded_model = Net(dic_size, hidden_size, 1) # 저장할때 층(layer) 1개였는지 2개였는지 기억하세요! (아까 수정했으면 1)
-        loaded_model.load_state_dict(checkpoint['model'])
-        loaded_model.eval() # 평가 모드
-        
-        return loaded_model, loaded_char_dic, loaded_chars, dic_size
-        
     except FileNotFoundError:
-        return None, None, None, None
+        return None, None, None
 
-# 모델 로드 실행
-model, char_dic, char_set, dic_size = load_model()
+    # 2. 저장된 설정값 가져오기
+    # 학습할 때 저장했던 'save_data' 딕셔너리를 여기서 풉니다.
+    dic_size = checkpoint['dic_size']
+    hidden_size = checkpoint['hidden_size']
+    num_layers = checkpoint['num_layers'] # 2층이라는 정보를 여기서 가져옴!
+    chars = checkpoint['chars']
+    
+    # 3. 모델 틀 만들기
+    model = Net(dic_size, hidden_size, num_layers)
+    
+    # 4. 기억 심기 (가중치 로드)
+    model.load_state_dict(checkpoint['model'])
+    model.eval() # 평가 모드 (성적표 받을 준비)
+    
+    return model, chars, dic_size
+
+model, chars, dic_size = load_model()
 
 # ---------------------------------------------------------
-# 3. 웹사이트 화면 구성 (UI)
+# 4. 글쓰기 기능
 # ---------------------------------------------------------
-st.title("Jay의 첫 인공지능 웹사이트(Beta)")
-st.caption("인공지능은 업데이트 될 예정.")
-
 if model is None:
-    st.error("❌ 오류: 'shakespeare.pt' 파일이 없습니다. 13번 코드를 먼저 실행하세요!")
+    st.error("🚨 'shakespeare.pt' 파일이 없습니다! Github에 업로드했는지 확인하세요.")
 else:
     # 사용자 입력
-    user_input = st.text_input("영어 단어를 입력하세요 (예: Shall)")
+    user_input = st.text_input("영어 단어를 입력하세요 (첫 마디를 던져주세요)", "The king")
 
-    if st.button("시 작성하기 (Write Poem)"):
-        with st.spinner('셰익스피어 문단 제작중...'):
+    if st.button("AI, 글을 써줘!"):
+        # 글자 -> 숫자 사전
+        char_dic = {c: i for i, c in enumerate(chars)}
+        
+        # 입력값 처리
+        input_str = user_input
+        if len(input_str) > 100: input_str = input_str[-100:] # 너무 길면 자름
+
+        # 글쓰기 시작
+        generated_text = input_str
+        
+        # 로딩바 표시
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        try:
+            with torch.no_grad():
+                for i in range(200): # 200글자 생성
+                    # 현재 문장을 숫자로 변환
+                    x = [char_dic.get(c, 0) for c in input_str] # 모르는 글자는 0번으로 처리
+                    x = torch.tensor([x], dtype=torch.float32) # [1, len, vocab_size] (One-hot은 생략, 임베딩처럼 처리하거나 수정 필요하지만 일단 진행)
+                    # 위 방식은 차원 에러 가능성 높음. 학습때 One-hot 했으므로 여기서도 해줘야 함.
+                    
+                    # One-hot Encoding (안전하게 다시 구현)
+                    x_one_hot = np.zeros((1, len(input_str), dic_size))
+                    for t, char_idx in enumerate(x[0]):
+                        x_one_hot[0, t, int(char_idx)] = 1
+                    
+                    x_input = torch.tensor(x_one_hot, dtype=torch.float32)
+
+                    # 예측
+                    output = model(x_input)
+                    
+                    # 마지막 글자의 예측값 가져오기
+                    last_output = output[-1]
+                    
+                    # 확률로 변환 (Softmax) 및 샘플링
+                    prob = torch.softmax(last_output, dim=0).numpy()
+                    
+                    # 약간의 무작위성 추가 (Temperature) - 너무 뻔한 말만 안 하게
+                    char_index = np.random.choice(dic_size, p=prob)
+                    
+                    # 숫자 -> 글자
+                    next_char = chars[char_index]
+                    generated_text += next_char
+                    input_str += next_char # 다음 예측을 위해 붙임
+                    
+                    # 로딩바 업데이트
+                    progress_bar.progress((i + 1) / 200)
+                    status_text.text(f"집필 중... ({i+1}/200자)")
+
+            st.success("작성 완료!")
+            st.markdown(f"### 📜 AI의 창작물:\n> {generated_text}")
             
-            # --- AI 예측 로직 시작 ---
-            input_str = user_input
-            
-            # 1) 입력된 글자를 숫자로 변환 (전처리)
-            try:
-                x_input = [char_dic[c] for c in input_str]
-                x_one_hot = [np.eye(dic_size)[x] for x in x_input]
-                X = torch.tensor(x_one_hot, dtype=torch.float32).unsqueeze(0)
-                
-                # 2) 예측 시작
-                predict_str = input_str
-                
-                # 50글자 정도 더 써보라고 시키기
-                for i in range(50):
-                    outputs = model(X)
-                    
-                    # 가장 확률 높은 다음 글자 선택
-                    result = outputs.data.numpy().argmax(axis=2)
-                    next_char_idx = result[0][-1] # 맨 마지막 글자의 예측값
-                    next_char = char_set[next_char_idx]
-                    
-                    predict_str += next_char
-                    
-                    # 다음 입력을 위해 데이터 업데이트 (Sliding)
-                    # 현재 예측한 글자를 다음 스텝의 입력으로 씀
-                    next_one_hot = np.eye(dic_size)[next_char_idx]
-                    next_tensor = torch.tensor(next_one_hot, dtype=torch.float32).view(1, 1, -1)
-                    X = torch.cat([X, next_tensor], dim=1)
-
-                st.success("작성 완료!")
-                st.markdown("### 🖋️ AI의 창작물:")
-                st.info(predict_str)
-                
-            except KeyError:
-                st.error("에러. 소문자와 영어만 가능합니다.(특수문자 X)")
-
-
+        except Exception as e:
+            st.error(f"에러가 발생했습니다: {e}")

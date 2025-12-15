@@ -1,100 +1,133 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import numpy as np
+import random
 
-# 1. 설정
+# ---------------------------------------------------------
+# 1. 설정 (Config)
+# ---------------------------------------------------------
+# 수박을 한 번에 몇 조각씩 넣을 것인가? (64개씩 묶어서 학습)
+BATCH_SIZE = 64
+# 수박 한 조각의 길이 (글자 100개를 보고 다음 글자 맞추기)
+SEQ_LENGTH = 100
+# 학습 횟수 (반복 훈련) - 많이 할수록 똑똑해짐
+NUM_EPOCHS = 2000 
+# 모델의 층 개수 (더 깊게 쌓기)
+HIDDEN_SIZE = 256
+NUM_LAYERS = 2
+
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-torch.manual_seed(0)
+print(f"🚀 사용 장치: {device}")
 
 # ---------------------------------------------------------
-# 2. 데이터 준비: 셰익스피어의 소네트 18번 (일부분)
+# 2. 데이터 준비 (전처리)
 # ---------------------------------------------------------
-sentence = ("Shall I compare thee to a summer's day? "
-            "Thou art more lovely and more temperate: "
-            "Rough winds do shake the darling buds of May, "
-            "And summer's lease hath all too short a date:")
+print("📚 데이터 읽는 중...")
+try:
+    with open('shakespeare.txt', 'r', encoding='utf-8') as f:
+        text = f.read()
+    print(f"✅ 전체 글자 수: {len(text)}자 (이제 다 먹일 수 있습니다!)")
+except FileNotFoundError:
+    print("❌ shakespeare.txt 파일을 찾을 수 없습니다!")
+    exit()
 
-print(f"학습할 문장 길이: {len(sentence)}글자")
+# 글자 족보 만들기
+chars = sorted(list(set(text)))
+char_dic = {c: i for i, c in enumerate(chars)} # 글자 -> 숫자
+dic_size = len(chars)
 
-# 문자 집합 만들기 (사전 제작)
-char_set = sorted(list(set(sentence)))
-char_dic = {c: i for i, c in enumerate(char_set)}
-dic_size = len(char_dic) # 문자 종류의 개수
+print(f"🔤 문자 종류: {dic_size}개")
 
-print(f"문자 사전 크기: {dic_size}개")
-
-# 데이터 가공 (Hyperparameters)
-hidden_size = 128   # 뇌세포 개수 (많을수록 똑똑함)
-sequence_length = 10 # AI에게 한 번에 보여줄 글자 수 (10글자 보고 다음 글자 맞히기)
-learning_rate = 0.01
-
-# 데이터셋 만들기 (Sliding Window)
-# 예: "Shall I co" -> "m", "hall I com" -> "p" ... 옆으로 한 칸씩 밀면서 문제집을 만듭니다.
-x_data = []
-y_data = []
-
-for i in range(0, len(sentence) - sequence_length):
-    x_str = sentence[i : i + sequence_length]
-    y_str = sentence[i + 1 : i + sequence_length + 1]
+# ---------------------------------------------------------
+# 3. 배치를 만드는 국자 (Helper Function)
+# ---------------------------------------------------------
+# 이 함수가 핵심입니다! 전체 데이터에서 랜덤으로 64개 조각을 퍼옵니다.
+def get_batch(text, batch_size, seq_length):
+    input_batch = []
+    target_batch = []
     
-    x_data.append([char_dic[c] for c in x_str])
-    y_data.append([char_dic[c] for c in y_str])
-
-# 원-핫 인코딩 & 텐서 변환
-x_one_hot = [np.eye(dic_size)[x] for x in x_data]
-X = torch.tensor(x_one_hot, dtype=torch.float32).to(device)
-Y = torch.tensor(y_data, dtype=torch.long).to(device)
+    for _ in range(batch_size):
+        # 1. 랜덤한 위치를 하나 찍음
+        start_idx = random.randint(0, len(text) - seq_length - 1)
+        
+        # 2. 그 위치부터 정해진 길이만큼 잘라냄
+        chunk = text[start_idx : start_idx + seq_length + 1]
+        
+        # 3. 숫자로 변환
+        encoded = [char_dic[c] for c in chunk]
+        
+        # 4. 문제(Input)와 정답(Target) 나누기
+        # 문제: H e l l o (앞 5글자)
+        # 정답: e l l o ! (뒤 5글자 - 한 칸 밀림)
+        input_data = encoded[:-1]
+        target_data = encoded[1:]
+        
+        input_batch.append(np.eye(dic_size)[input_data]) # One-hot Encoding
+        target_batch.append(target_data)
+        
+    # 파이토치 텐서로 변환해서 GPU로 보냄
+    inputs = torch.tensor(input_batch, dtype=torch.float32).to(device)
+    targets = torch.tensor(target_batch, dtype=torch.long).to(device)
+    
+    return inputs, targets
 
 # ---------------------------------------------------------
-# 3. 모델 설계 (LSTM: 긴 기억력을 가진 신경망)
+# 4. 모델 설계 (LSTM)
 # ---------------------------------------------------------
 class Net(nn.Module):
     def __init__(self, input_dim, hidden_dim, layers):
         super(Net, self).__init__()
-        # RNN 대신 LSTM을 씁니다! (업그레이드)
         self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=layers, batch_first=True)
         self.fc = nn.Linear(hidden_dim, input_dim, bias=True)
 
     def forward(self, x):
         out, _ = self.lstm(x)
+        # LSTM 결과는 3D인데, FC는 2D를 원함 -> 모양 맞추기
+        out = out.reshape(-1, out.shape[2]) 
         out = self.fc(out)
         return out
 
-model = Net(dic_size, hidden_size, 1).to(device) # 층을 2개 쌓아서 더 깊게!
+model = Net(dic_size, HIDDEN_SIZE, NUM_LAYERS).to(device)
 
-# 4. 학습 시작
+# 손실 함수와 최적화 도구
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.002)
 
-print("\n=== AI 작가 데뷔 준비 중 (학습 시작) ===")
-epochs = 3000 # 100번 반복 학습
+# ---------------------------------------------------------
+# 5. 학습 시작 (Training)
+# ---------------------------------------------------------
+print("\n🔥 스파르타 훈련 시작 (2000번 반복)...")
 
-for i in range(epochs):
+for epoch in range(NUM_EPOCHS):
+    # 1. 국자로 데이터 퍼오기 (Batch)
+    inputs, targets = get_batch(text, BATCH_SIZE, SEQ_LENGTH)
+    
+    # 2. 모델 예측
+    outputs = model(inputs)
+    
+    # 3. 오차 계산 (정답이랑 얼마나 틀렸나?)
+    # targets를 1줄로 쭉 펴야 함
+    loss = criterion(outputs, targets.view(-1))
+    
+    # 4. 수정 (역전파)
     optimizer.zero_grad()
-    outputs = model(X)
-    
-    # 오차 계산
-    loss = criterion(outputs.view(-1, dic_size), Y.view(-1))
-    
-    # 미분 및 업데이트
     loss.backward()
     optimizer.step()
+    
+    # 200번마다 성적표 출력
+    if (epoch + 1) % 200 == 0:
+        print(f"Epoch [{epoch+1}/{NUM_EPOCHS}], Loss: {loss.item():.4f}")
 
-    if i % 10 == 0:
-        # 현재까지 배운 걸로 아무말 대잔치 해보기
-        results = outputs.argmax(dim=2)
-        predict_str = ""
-        for j, result in enumerate(results):
-            if j == 0: # 첫 번째 문장은 다 가져오고
-                predict_str += ''.join([char_set[t] for t in result])
-            else: # 그 뒤부터는 마지막 글자만 이어 붙임
-                predict_str += char_set[result[-1]]
-
-        print(f"Epoch {i}: {loss.item():.4f}")
-        print(f"생성된 문장: {predict_str}\n")
-
-print("---------------------------------")
-print("✅ 최종 결과 (원본 vs AI 작문):")
-print(f"원본: {sentence}")
-print(f"AI  : {predict_str}")
+# ---------------------------------------------------------
+# 6. 저장 (Save)
+# ---------------------------------------------------------
+print("\n💾 똑똑해진 뇌 저장 중...")
+save_data = {
+    'model': model.state_dict(),
+    'chars': chars,
+    'hidden_size': HIDDEN_SIZE,
+    'dic_size': dic_size,
+    'num_layers': NUM_LAYERS # 층 개수도 저장해야 함
+}
+torch.save(save_data, 'shakespeare.pt')
+print("✅ 저장 완료! (shakespeare.pt)")

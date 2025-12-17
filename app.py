@@ -116,27 +116,38 @@ class GPTLanguageModel(nn.Module):
 # ---------------------------------------------------------
 # 3. 모델 로딩 (GPT 전용) - 수정됨
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# 3. 모델 로딩 (스마트 버전)
+# ---------------------------------------------------------
 @st.cache_resource
 def load_gpt_model():
-    # 1. 깡통 모델 만들기
-    model = GPTLanguageModel()
-    
-    # 2. 학습된 가중치(기억) 불러오기
     try:
-        # map_location='cpu' 필수
-        state_dict = torch.load('baby_gpt.pt', map_location=torch.device('cpu'))
-        model.load_state_dict(state_dict)
+        # 1. 파일 열기
+        checkpoint = torch.load('baby_gpt.pt', map_location=torch.device('cpu'))
+        
+        # 2. 파일 안에 들어있는 '문자 족보' 꺼내기 (핵심!)
+        chars = checkpoint['chars']
+        vocab_size = checkpoint['vocab_size']
+        
+        # 3. 족보를 보고 사전 만들기
+        stoi = { ch:i for i,ch in enumerate(chars) }
+        itos = { i:ch for i,ch in enumerate(chars) }
+        
+        # 4. 모델 껍데기 만들기 (저장된 설정대로 크기 맞춤)
+        # 전역 변수 설정이 꼬일 수 있으므로 여기서 바로 주입
+        model = GPTLanguageModel()
+        model.token_embedding_table = nn.Embedding(vocab_size, N_EMBD) # 크기 자동 조절
+        model.lm_head = nn.Linear(N_EMBD, vocab_size)                  # 크기 자동 조절
+        
+        # 5. 기억 이식
+        model.load_state_dict(checkpoint['model'])
         model.eval()
+        
+        return model, stoi, itos
+        
     except Exception as e:
-        # [수정] 반환값을 3개로 맞춰줌 (None, 에러메시지, None)
         return None, str(e), None
 
-    # 3. 문자 족보(Vocab) 만들기
-    chars = sorted(list(set("\n !$&',-.3:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")))
-    stoi = { ch:i for i,ch in enumerate(chars) }
-    itos = { i:ch for i,ch in enumerate(chars) }
-    
-    return model, stoi, itos
 model, stoi, itos = load_gpt_model()
 
 # ---------------------------------------------------------

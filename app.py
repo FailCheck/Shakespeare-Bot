@@ -1,28 +1,19 @@
 import streamlit as st
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 import numpy as np
 
 # ---------------------------------------------------------
-# [1] 페이지 설정 (반드시 맨 처음에 와야 함)
+# 1. 페이지 설정
 # ---------------------------------------------------------
-st.set_page_config(
-    page_title="AI Shakespeare",
-    page_icon="✒️",
-    layout="wide"  # 화면을 넓게 씁니다
-)
+st.set_page_config(page_title="Jay's Baby GPT", page_icon="🤖", layout="wide")
 
-# ---------------------------------------------------------
-# [2] 스타일 꾸미기 (CSS) - 글씨체나 박스 모양 예쁘게
-# ---------------------------------------------------------
 st.markdown("""
 <style>
-    .stTextInput > div > div > input {
-        font-size: 20px;
-    }
     .main-text {
-        font-family: 'Times New Roman', serif;
-        font-size: 1.2rem;
+        font-family: 'Courier New', monospace;
+        font-size: 1.1rem;
         line-height: 1.6;
         background-color: #f0f2f6;
         padding: 20px;
@@ -33,128 +24,182 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# [3] AI 모델 클래스 (변경 없음)
+# 2. GPT 모델 구조 (학습 코드와 똑같이 복사해야 함)
 # ---------------------------------------------------------
-class Net(nn.Module):
-    def __init__(self, input_dim, hidden_dim, layers):
-        super(Net, self).__init__()
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers=layers, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, input_dim, bias=True)
+# 설정값 (학습할 때 쓴 것과 똑같이 맞춰야 함)
+BLOCK_SIZE = 64
+N_EMBD = 128
+N_HEAD = 4
+N_LAYER = 2
+DROPOUT = 0.2
+VOCAB_SIZE = 65 # 셰익스피어 데이터 문자 개수 (대략 65개)
+
+class Head(nn.Module):
+    def __init__(self, head_size):
+        super().__init__()
+        self.key = nn.Linear(N_EMBD, head_size, bias=False)
+        self.query = nn.Linear(N_EMBD, head_size, bias=False)
+        self.value = nn.Linear(N_EMBD, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(BLOCK_SIZE, BLOCK_SIZE)))
+        self.dropout = nn.Dropout(DROPOUT)
 
     def forward(self, x):
-        out, _ = self.lstm(x)
-        out = out.reshape(-1, out.shape[2])
-        out = self.fc(out)
+        B,T,C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+        wei = q @ k.transpose(-2, -1) * C**-0.5
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
+        v = self.value(x)
+        out = wei @ v
         return out
 
+class MultiHeadAttention(nn.Module):
+    def __init__(self, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(N_EMBD, N_EMBD)
+        self.dropout = nn.Dropout(DROPOUT)
+
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.dropout(self.proj(out))
+        return out
+
+class FeedFoward(nn.Module):
+    def __init__(self, n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(DROPOUT),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class Block(nn.Module):
+    def __init__(self, n_embd, n_head):
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiHeadAttention(n_head, head_size)
+        self.ffwd = FeedFoward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        return x
+
+class GPTLanguageModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.token_embedding_table = nn.Embedding(VOCAB_SIZE, N_EMBD)
+        self.position_embedding_table = nn.Embedding(BLOCK_SIZE, N_EMBD)
+        self.blocks = nn.Sequential(*[Block(N_EMBD, n_head=N_HEAD) for _ in range(N_LAYER)])
+        self.ln_f = nn.LayerNorm(N_EMBD)
+        self.lm_head = nn.Linear(N_EMBD, VOCAB_SIZE)
+
+    def forward(self, idx, targets=None):
+        B, T = idx.shape
+        tok_emb = self.token_embedding_table(idx)
+        pos_emb = self.position_embedding_table(torch.arange(T, device='cpu')) # CPU로 강제
+        x = tok_emb + pos_emb
+        x = self.blocks(x)
+        x = self.ln_f(x)
+        logits = self.lm_head(x)
+        return logits
+
 # ---------------------------------------------------------
-# [4] 모델 로딩 함수 (캐시 사용)
+# 3. 모델 로딩 (GPT 전용)
 # ---------------------------------------------------------
 @st.cache_resource
-def load_model():
-    try:
-        checkpoint = torch.load('shakespeare.pt', map_location=torch.device('cpu'))
-    except FileNotFoundError:
-        return None, None, None
-
-    dic_size = checkpoint['dic_size']
-    hidden_size = checkpoint['hidden_size']
-    num_layers = checkpoint['num_layers']
-    chars = checkpoint['chars']
+def load_gpt_model():
+    # 1. 깡통 모델 만들기
+    model = GPTLanguageModel()
     
-    model = Net(dic_size, hidden_size, num_layers)
-    model.load_state_dict(checkpoint['model'])
-    model.eval()
-    return model, chars, dic_size
+    # 2. 학습된 가중치(기억) 불러오기
+    try:
+        # map_location='cpu' 필수 (클라우드는 GPU가 없을 수 있음)
+        state_dict = torch.load('baby_gpt.pt', map_location=torch.device('cpu'))
+        model.load_state_dict(state_dict)
+        model.eval()
+    except Exception as e:
+        return None, str(e)
 
-model, chars, dic_size = load_model()
+    # 3. 문자 족보(Vocab) 만들기 (학습 때 쓴 것과 똑같아야 함)
+    # 셰익스피어 데이터에 있는 모든 글자 (총 65개)
+    chars = sorted(list(set("\n !$&',-.3:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")))
+    stoi = { ch:i for i,ch in enumerate(chars) }
+    itos = { i:ch for i,ch in enumerate(chars) }
+    
+    return model, stoi, itos
+
+model, stoi, itos = load_gpt_model()
 
 # ---------------------------------------------------------
-# [5] 사이드바 (설정 메뉴)
+# 4. 화면 구성
 # ---------------------------------------------------------
 with st.sidebar:
-    st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/a/a2/Shakespeare.jpg/220px-Shakespeare.jpg", width=150)
-    st.title("⚙️ 설정 (Settings)")
-    st.write("AI 작가의 성격을 조절하세요.")
-    
-    # 슬라이더들을 사이드바로 이동
-    temperature = st.slider("🌡️ 창의성 (Temperature)", 0.1, 2.0, 0.8, help="낮으면 진지하고, 높으면 엉뚱해집니다.")
-    length = st.slider("📏 글 길이 (Length)", 100, 1000, 300, step=100)
-    
-    st.divider()
-    st.caption("Created by **Jay Jeon**")
-    st.caption("Powered by PyTorch & LSTM")
+    st.title("🤖 Jay's Baby GPT")
+    st.caption("Transformer Architecture (2017) 구현체")
+    st.markdown("---")
+    temperature = st.slider("창의성 (Temperature)", 0.5, 1.5, 0.8)
+    max_tokens = st.slider("생성 길이", 100, 1000, 300)
+    st.info("이 모델은 문맥을 파악하는 'Attention' 메커니즘을 사용합니다.")
 
-# ---------------------------------------------------------
-# [6] 메인 화면 구성
-# ---------------------------------------------------------
-st.title("✒️ AI Shakespeare Writer")
-st.subheader("인공지능이 셰익스피어의 문체로 글을 이어 씁니다.")
+st.title("🧠 Baby GPT: The Beginning")
+st.write("LSTM(순차 처리)을 넘어, **Transformer(병렬 처리)** 시대로 오신 것을 환영합니다.")
 
-# 화면을 왼쪽(입력)과 오른쪽(출력)으로 6:4 비율로 나눔
 col1, col2 = st.columns([1, 1])
 
-# --- 왼쪽: 입력란 ---
 with col1:
-    st.info("👇 첫 마디를 던져주세요.")
-    user_input = st.text_input("입력 (영어):", "The king")
-    
-    if model is None:
-        st.error("🚨 모델 파일(shakespeare.pt)이 없습니다!")
-    
-    generate_btn = st.button("✍️ 글쓰기 시작", type="primary", use_container_width=True)
+    start_str = st.text_input("첫 문장을 입력하세요:", "The meaning of life is")
+    btn = st.button("GPT, 생각해서 글을 써줘!", type="primary")
 
-    # 원리 설명 (포트폴리오용)
-    with st.expander("ℹ️ 이 AI는 어떻게 작동하나요?"):
-        st.markdown("""
-        1. **데이터:** 셰익스피어 희곡 100만 자를 학습했습니다.
-        2. **모델:** LSTM(Long Short-Term Memory) 신경망을 사용했습니다.
-        3. **구조:** 2개의 층(Layers)을 쌓아 문맥을 깊이 이해합니다.
-        4. **학습:** M-series GPU 가속을 통해 학습되었습니다.
-        """)
-
-# --- 오른쪽: 결과창 ---
 with col2:
-    if generate_btn and model is not None:
-        char_dic = {c: i for i, c in enumerate(chars)}
-        input_str = user_input
-        generated_text = input_str
-        
-        status_text = st.empty()
-        progress_bar = st.progress(0)
-        
-        try:
+    if btn:
+        if isinstance(model, str): # 에러 메시지인 경우
+            st.error(f"모델 로딩 실패: {model}\n'baby_gpt.pt' 파일을 업로드했는지 확인하세요.")
+        else:
+            status = st.empty()
+            progress = st.progress(0)
+            
+            # 초기 입력값 숫자로 변환
+            context = [stoi.get(c, 0) for c in start_str]
+            idx = torch.tensor([context], dtype=torch.long)
+            
+            generated_text = start_str
+            
             with torch.no_grad():
-                for i in range(length):
-                    x = [char_dic.get(c, 0) for c in input_str[-100:]] # 최근 100글자만 봄
+                for i in range(max_tokens):
+                    # Context Window 자르기 (최근 64글자만 봄)
+                    idx_cond = idx[:, -BLOCK_SIZE:]
                     
-                    # One-hot encoding
-                    x_one_hot = np.zeros((1, len(x), dic_size))
-                    for t, char_idx in enumerate(x):
-                        x_one_hot[0, t, int(char_idx)] = 1
+                    # 예측
+                    logits = model(idx_cond)
+                    logits = logits[:, -1, :] # 마지막 글자만
                     
-                    x_input = torch.tensor(x_one_hot, dtype=torch.float32)
-                    output = model(x_input)
-                    last_output = output[-1]
+                    # 확률 조작 (Temperature)
+                    probs = F.softmax(logits / temperature, dim=-1)
                     
-                    prob = torch.softmax(last_output / temperature, dim=0).numpy()
-                    char_index = np.random.choice(dic_size, p=prob)
+                    # 다음 글자 뽑기
+                    idx_next = torch.multinomial(probs, num_samples=1)
+                    idx = torch.cat((idx, idx_next), dim=1)
                     
-                    next_char = chars[char_index]
+                    # 결과 누적
+                    next_char = itos[idx_next.item()]
                     generated_text += next_char
-                    input_str += next_char
                     
-                    # 진행률 업데이트 (너무 빠르면 정신없으니 10글자마다 갱신)
+                    # 로딩바
                     if i % 10 == 0:
-                        progress_bar.progress((i + 1) / length)
-                        status_text.text(f"집필 중... {i+1}/{length}자")
-
-            progress_bar.empty()
-            status_text.empty()
+                        status.text(f"GPT가 생각 중... ({i}/{max_tokens})")
+                        progress.progress((i+1)/max_tokens)
             
-            # 결과 예쁘게 보여주기
-            st.success("작성 완료!")
+            status.empty()
+            progress.empty()
+            st.success("생성 완료!")
             st.markdown(f'<div class="main-text">{generated_text}</div>', unsafe_allow_html=True)
-            
-        except Exception as e:
-            st.error(f"에러 발생: {e}")

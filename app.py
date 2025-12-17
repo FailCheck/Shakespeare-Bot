@@ -161,8 +161,8 @@ with col1:
 
 with col2:
     if btn:
-        if isinstance(model, str): # 에러 메시지인 경우
-            st.error(f"모델 로딩 실패: {model}\n'baby_gpt.pt' 파일을 업로드했는지 확인하세요.")
+        if model is None: 
+            st.error(f"모델 로딩 실패: {stoi}\n'baby_gpt.pt' 파일을 업로드했는지 확인하세요.")
         else:
             status = st.empty()
             progress = st.progress(0)

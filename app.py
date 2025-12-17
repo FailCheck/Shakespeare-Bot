@@ -114,7 +114,7 @@ class GPTLanguageModel(nn.Module):
         return logits
 
 # ---------------------------------------------------------
-# 3. 모델 로딩 (GPT 전용)
+# 3. 모델 로딩 (GPT 전용) - 수정됨
 # ---------------------------------------------------------
 @st.cache_resource
 def load_gpt_model():
@@ -123,21 +123,20 @@ def load_gpt_model():
     
     # 2. 학습된 가중치(기억) 불러오기
     try:
-        # map_location='cpu' 필수 (클라우드는 GPU가 없을 수 있음)
+        # map_location='cpu' 필수
         state_dict = torch.load('baby_gpt.pt', map_location=torch.device('cpu'))
         model.load_state_dict(state_dict)
         model.eval()
     except Exception as e:
-        return None, str(e)
+        # [수정] 반환값을 3개로 맞춰줌 (None, 에러메시지, None)
+        return None, str(e), None
 
-    # 3. 문자 족보(Vocab) 만들기 (학습 때 쓴 것과 똑같아야 함)
-    # 셰익스피어 데이터에 있는 모든 글자 (총 65개)
+    # 3. 문자 족보(Vocab) 만들기
     chars = sorted(list(set("\n !$&',-.3:;?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")))
     stoi = { ch:i for i,ch in enumerate(chars) }
     itos = { i:ch for i,ch in enumerate(chars) }
     
     return model, stoi, itos
-
 model, stoi, itos = load_gpt_model()
 
 # ---------------------------------------------------------
